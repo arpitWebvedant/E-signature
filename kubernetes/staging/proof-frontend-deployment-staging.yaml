@@ -1,0 +1,213 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proof-frontend
+  namespace: staging
+  labels:
+    app: proof
+    component: frontend
+    environment: staging
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: proof
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: proof
+        component: frontend
+        environment: staging
+    spec:
+      containers:
+        - name: frontend
+          image: 921840973142.dkr.ecr.us-west-2.amazonaws.com/proof-frontend:staging-latest
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            # Centralized Auth URLs
+            - name: NEXT_PUBLIC_CENTRALIZED_AUTH_BACKEND_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_CENTRALIZED_AUTH_BACKEND_URL
+            - name: NEXT_PUBLIC_CENTRALIZED_AUTH_FRONTEND_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_CENTRALIZED_AUTH_FRONTEND_URL
+
+            # API Configuration
+            - name: NEXT_PUBLIC_APP_API_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_APP_API_BASE_URL
+
+            # Product Name
+            - name: NEXT_PUBLIC_PRODUCT_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_PRODUCT_NAME
+
+            # Additional URLs
+            - name: NEXT_PUBLIC_CRM_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_CRM_URL
+            - name: NEXT_PUBLIC_AUTODOC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_AUTODOC_URL
+            - name: NEXT_PUBLIC_LITDRAFT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_LITDRAFT_URL
+            - name: NEXT_PUBLIC_MEDCHRON_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_MEDCHRON_URL
+            - name: NEXT_PUBLIC_DEPOBRIEF_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_DEPOBRIEF_URL
+            - name: NEXT_PUBLIC_OMNISPROOF_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proof-frontend-sealed-secret
+                  key: NEXT_PUBLIC_OMNISPROOF_URL
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          imagePullPolicy: Always
+      tolerations:
+        - key: staging
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: spot
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proof-frontend
+  namespace: staging
+  labels:
+    app: proof
+    component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: proof
+    component: frontend
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: proof-frontend
+  namespace: staging
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-west-2:921840973142:certificate/88281aef-cdb3-4b19-a912-9171e35901a4
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/group.name: staging-frontend-shared
+    alb.ingress.kubernetes.io/group.order: "600"
+    # Performance optimizations
+    alb.ingress.kubernetes.io/load-balancer-attributes: |
+      routing.http2.enabled=true,
+      idle_timeout.timeout_seconds=300,
+      access_logs.s3.enabled=false,
+      routing.http.drop_invalid_header_fields.enabled=true
+
+    # Health checks
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "3"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+
+    # Frontend optimizations
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/success-codes: "200,201,204"
+    alb.ingress.kubernetes.io/target-group-attributes: |
+      deregistration_delay.timeout_seconds=5,
+      stickiness.enabled=true,
+      stickiness.type=lb_cookie
+spec:
+  rules:
+    - host: proof.stg-omnisai.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: proof-frontend
+                port:
+                  number: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: proof-frontend
+  namespace: staging
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: proof-frontend
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
